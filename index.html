@@ -230,6 +230,15 @@ html,body{margin:0;padding:0;height:100%;background:#0a0020;overflow:hidden;
 #devpanel.on{display:block}
 #devpanel b{color:#ffd700;font-weight:700}
 #devpanel .warn{color:#ff9944}
+#tuner{position:fixed;right:8px;bottom:8px;z-index:901;background:rgba(0,0,0,.88);border:1px solid #ffd70088;
+  border-radius:4px;padding:10px 12px;font-family:monospace;font-size:11px;color:#7fdfb0;line-height:1.5;
+  white-space:pre;display:none}
+#tuner.on{display:block}
+#tuner b{color:#ffd700}
+#tuner .x{color:#556}
+#tuner input{width:260px}
+#tuner button{font-family:monospace;font-size:11px;background:#123;color:#7fdfb0;border:1px solid #00ff8866;
+  border-radius:3px;padding:3px 8px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -239,6 +248,7 @@ html,body{margin:0;padding:0;height:100%;background:#0a0020;overflow:hidden;
 <div id="scr-game" class="screen"></div>
 <div id="scr-end" class="screen"></div>
 <div id="devpanel"></div>
+<div id="tuner"></div>
 
 <script>
 "use strict";
@@ -279,6 +289,7 @@ var FX_GAIN        = 0.24;
 var STATIC_DB_TOP  = -58;   // at the top tier
 var STATIC_DB_SPAN = 18;    // how much quieter it is at Marker zero
 var STATIC_RAMP_S  = 8;     // seconds to settle after a level change, so no step is heard
+var MENU_MUSIC_GAP_S = 3.5; // silence between the static cutting and the menu loop starting
 
 /* ---------------------------------------------------------------------------
    PIECES
@@ -1229,6 +1240,10 @@ document.addEventListener("keydown",function(e){
    which the design notes flag as never having been measured.
    ========================================================================= */
 function devKey(e){
+  if(e.key==="t"||e.key==="T"){                 // the static tuner
+    if(TUNER.open)tunerClose();else tunerOpen();
+    return true;
+  }
   if(!el("scr-game").classList.contains("on"))return false;
   if(e.key==="m"||e.key==="M"){                 // grant a Marker
     G.markers++;G.score+=MARKER_SCORE;renderHUD();updateStatic();updateDev();return true;
@@ -1260,7 +1275,7 @@ function devKey(e){
 function updateDev(){
   var p=el("devpanel");
   p.classList.toggle("on",DEV.on);
-  if(!DEV.on)return;
+  if(!DEV.on){if(TUNER.open)tunerClose();return;}
   var itf=getMarkerInterference(G.markers);
   var tier=Math.min(G.markers,MARKER_INTERFERENCE.length-1);
   p.innerHTML=
@@ -1275,7 +1290,7 @@ function updateDev(){
     'music/fx          : '+(AUDIO.on?'on':'off')+'   (the static ignores this)\n'+
     'screen wobble     : '+(DEV.wobbles?'<span class="warn">'+DEV.wobbles+'   last '+esc(DEV.lastWobble)+'</span>':'0')+'\n'+
     'lines '+G.lines+'   level '+(G.level+1)+'   gravity '+gravitySpeed()+'ms\n'+
-    '<b>M</b> grant marker   <b>N</b> +10 lines   <b>H</b> hear static   <b>Ctrl+Shift+D</b> hide';
+    '<b>M</b> grant marker   <b>N</b> +10 lines   <b>H</b> hear static   <b>T</b> tuner   <b>Ctrl+Shift+D</b> hide';
 }
 
 /* ============================================================================
@@ -1284,12 +1299,14 @@ function updateDev(){
 
    The Music/FX toggle mutes the loop and the bleeps. It does not reach the
    static, which is wired straight to the speakers, because the static isn't
-   the game's. It's the Marker's. It plays only during a run, sits below
-   hearing (or right at its edge), rises with every Marker collected, and cuts
-   dead when the run ends. Nothing ever mentions it.
+   the game's. It's the Marker's. It starts with a run, sits below hearing (or
+   right at its edge), and rises with every Marker collected. It carries on
+   through pause and through the win and loss screens, where nothing else is
+   playing, and cuts dead only when you go back to the main menu, which then
+   waits a beat before its music starts. Nothing ever mentions it.
    ========================================================================= */
 var AC=null,busOut=null,musicOut=null,fxOut=null,staticOut=null,noiseBuf=null;
-var AUDIO={on:true,music:false,live:false,staticDb:-Infinity,solo:false};
+var AUDIO={on:true,music:false,live:false,staticDb:-Infinity,solo:false,preview:false};
 
 function audioInit(){
   if(AC)return true;
@@ -1350,7 +1367,8 @@ function staticDb(markers){
 }
 // cut=true drops it in 30 ms: abrupt on purpose, just long enough not to click
 function updateStatic(cut){
-  var db=AUDIO.live?staticDb(G.markers):-Infinity;
+  // the dev tuner's preview plays the top tier, the loudest it can ever be
+  var db=AUDIO.preview?STATIC_DB_TOP:AUDIO.live?staticDb(G.markers):-Infinity;
   AUDIO.staticDb=db;
   if(!AC)return;
   var lin=db===-Infinity?0:Math.pow(10,(db+(AUDIO.solo?30:0))/20);
@@ -1360,6 +1378,39 @@ function updateStatic(cut){
 }
 function staticStart(){AUDIO.live=true;updateStatic();}
 function staticCut(){AUDIO.live=false;AUDIO.solo=false;updateStatic(true);}
+
+/* ---- the static tuner: dev mode, T. Plays the top tier, the loudest the
+   static ever gets, so its ceiling can be set by ear. The slider changes
+   STATIC_DB_TOP live; copy the number it shows into the TUNING block. ---- */
+var TUNER={open:false};
+function tunerOpen(){
+  audioInit();
+  var t=el("tuner");
+  t.innerHTML=
+    '<b>STATIC TUNER</b>  <span class="x" id="tn-x">T to close</span>\n'+
+    'Playing the top tier: the loudest it ever gets.\n'+
+    'Tune at your normal volume with music off; the end\n'+
+    'screen is exactly that, silence plus this.\n\n'+
+    '<input type="range" id="tn-db" min="-90" max="-30" step="0.5" value="'+STATIC_DB_TOP+'">\n'+
+    '<span id="tn-val"></span>\n\n'+
+    '<button id="tn-play"></button> <button id="tn-mus"></button>';
+  t.classList.add("on");TUNER.open=true;AUDIO.preview=true;
+  el("tn-db").oninput=function(){STATIC_DB_TOP=+this.value;tunerRender();updateStatic(true);updateDev();};
+  el("tn-play").onclick=function(){AUDIO.preview=!AUDIO.preview;tunerRender();updateStatic(true);};
+  el("tn-mus").onclick=function(){toggleSound();tunerRender();};
+  tunerRender();updateStatic(true);updateDev();
+}
+function tunerRender(){
+  if(!TUNER.open)return;
+  el("tn-val").innerHTML='STATIC_DB_TOP = <b>'+STATIC_DB_TOP.toFixed(1)+'</b>   (Marker 0 sits '+STATIC_DB_SPAN+' dB under it)';
+  el("tn-play").textContent=AUDIO.preview?"■ stop static":"▶ play static";
+  el("tn-mus").textContent="music & fx: "+(AUDIO.on?"on":"off");
+}
+function tunerClose(){
+  TUNER.open=false;AUDIO.preview=false;
+  var t=el("tuner");t.classList.remove("on");t.innerHTML="";
+  updateStatic(true);
+}
 
 /* ---- voices ---- */
 function mtof(m){return 440*Math.pow(2,(m-69)/12);}
@@ -1390,10 +1441,10 @@ var MELODY=[76,79,84,79,76,79,84,86, 88,84,81,84,88,86,84,81,
             77,81,84,81,77,81,84,86, 86,83,79,83,86,0,79,0];
 var BASS_ROOTS=[48,45,41,43];
 var musicStep=0,musicNext=0,musicTimer=null;
-function musicStart(){
+function musicStart(delay){
   if(!AC)return;
   musicStop();AUDIO.music=true;
-  musicStep=0;musicNext=AC.currentTime+0.08;
+  musicStep=0;musicNext=AC.currentTime+(delay||0.08);
   musicTimer=setInterval(musicPump,25);musicPump();
 }
 function musicStop(){AUDIO.music=false;clearInterval(musicTimer);musicTimer=null;}
@@ -1470,7 +1521,7 @@ function startPlaying(){
 
 function toEnd(){
   stopTick();stopTips();clearTimeout(cardTimer);clearInterval(encTimer);
-  musicStop();staticCut();
+  musicStop();                   // the static plays on: this screen is silence plus it
   sfx(G.won?"win":"over",0.7);   // a beat of nothing first
   var host=el("scr-end");host.innerHTML="";makeStars(host);
   var stage=document.createElement("div");stage.className="stage";
@@ -1512,7 +1563,9 @@ function toEnd(){
 function toMenu(){
   stopTick();stopTips();clearTimeout(cardTimer);clearInterval(encTimer);
   G.transCards=[];G.paused=false;
-  staticCut();musicStart();
+  // the static stops here and only here, and the menu loop holds off so the
+  // stop lands in silence instead of under the music
+  staticCut();musicStart(MENU_MUSIC_GAP_S);
   el("mpmsg").innerHTML="";
   showScreen("scr-splash");
 }
