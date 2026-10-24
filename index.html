@@ -126,7 +126,11 @@ html,body{margin:0;padding:0;height:100%;background:#0a0020;overflow:hidden;
 .panel.ctr{text-align:center}
 .panel.gold{border-color:#ffd70044}
 .panel.gold .lbl{color:#ffd700}
-.panel .mk{font-size:14px;color:#ffd700;font-family:monospace}
+/* fixed height and no wrap: the counter's glyphs and its +n overflow must never change the
+   sidebar's height, or fitStage() rescales the whole screen (see FIT_PAD) */
+.panel .mk{font-size:14px;color:#ffd700;font-family:monospace;height:20px;line-height:20px;
+  white-space:nowrap;overflow:hidden}
+.panel .mk small{font-size:9px}
 .panel.keys{background:rgba(0,40,30,.3);border-color:#00ff8822;padding:6px 8px;font-size:9px;
   color:#557788;line-height:1.7;font-family:monospace}
 .panel.crew{background:rgba(0,40,30,.4);border-color:#00ff8833;padding:6px 8px;text-align:center}
@@ -573,12 +577,22 @@ function makeStars(host){
 
 /* Scale the active screen's content down when the window is smaller than it.
    The original just let the page scroll; a standalone file should fit. */
+/* Wobble: the stage changing size while neither the screen nor the window did.
+   Any content that grows or shrinks makes fitStage() rescale everything, which
+   reads as the whole game twitching. Dev mode counts it; the count should stay 0. */
+var lastFit=null;
 function fitStage(){
   var scr=document.querySelector(".screen.on");if(!scr)return;
   var stage=scr.querySelector(".stage");if(!stage)return;
   stage.style.transform="none";
   var w=stage.offsetWidth,h=stage.offsetHeight;
   if(!w||!h)return;
+  if(lastFit&&scr.id==="scr-game"&&lastFit.id===scr.id&&lastFit.ww===window.innerWidth&&lastFit.wh===window.innerHeight&&
+     (lastFit.w!==w||lastFit.h!==h)&&typeof DEV!=="undefined"){
+    DEV.wobbles++;DEV.lastWobble=scr.id+" "+lastFit.w+"x"+lastFit.h+" → "+w+"x"+h;
+    if(DEV.on)updateDev();
+  }
+  lastFit={id:scr.id,ww:window.innerWidth,wh:window.innerHeight,w:w,h:h};
   var s=Math.min(1,(window.innerWidth-FIT_PAD)/w,(window.innerHeight-FIT_PAD)/h);
   stage.style.transform="scale("+s+")";
 }
@@ -689,7 +703,7 @@ var G={
 };
 var tickTimer=null, tickSpeed=null, cardTimer=null, markerPopTimer=null,
     tipAutoTimer=null, tipGapTimer=null, encTimer=null;
-var DEV={on:false,swallowed:0,swapped:0,lies:0,lyingNow:false,spawns:0};
+var DEV={on:false,swallowed:0,swapped:0,lies:0,lyingNow:false,spawns:0,wobbles:0,lastWobble:""};
 
 function pull(){
   if(!G.bag.length)G.bag=shuffleBag();
@@ -829,8 +843,8 @@ function renderHUD(){
   el("hud-lvlbl").textContent="LEVEL "+(G.level+1);
   var lv=LEVELS[Math.min(G.level,LEVELS.length-1)];
   el("hud-lvname").textContent=(lv&&lv.name)||"Deep Space";
-  el("hud-markers").textContent=(G.markers>0?repeat("✦",Math.min(G.markers,10)):"0")+
-    (G.markers>10?" +"+(G.markers-10):"");
+  el("hud-markers").innerHTML=(G.markers>0?repeat("✦",Math.min(G.markers,10)):"0")+
+    (G.markers>10?"<small> +"+(G.markers-10)+"</small>":"");
   renderNext();
   renderCrew();
   renderEnc();
@@ -841,13 +855,21 @@ function renderNext(){
   if(!G.nextType){host.innerHTML="";return;}
   if(host.dataset.t===G.nextType)return;
   host.dataset.t=G.nextType;
-  var shape=SHAPES[G.nextType],color=PIECE_COLORS[G.nextType],s=16,body="";
-  for(var r=0;r<shape.length;r++)for(var c=0;c<shape[r].length;c++){
+  // A fixed 4x2 box with the piece trimmed to its filled cells and centred in it.
+  // Sizing the box to each shape's matrix made the sidebar 16px taller for an I
+  // and shorter for an O, and fitStage() rescaled the whole screen on every spawn.
+  var shape=SHAPES[G.nextType],color=PIECE_COLORS[G.nextType],s=16,body="",r,c;
+  var r0=9,r1=-1,c0=9,c1=-1;
+  for(r=0;r<shape.length;r++)for(c=0;c<shape[r].length;c++)if(shape[r][c]){
+    r0=Math.min(r0,r);r1=Math.max(r1,r);c0=Math.min(c0,c);c1=Math.max(c1,c);
+  }
+  var ox=(4-(c1-c0+1))*s/2,oy=(2-(r1-r0+1))*s/2;
+  for(r=r0;r<=r1;r++)for(c=c0;c<=c1;c++){
     if(!shape[r][c])continue;
-    body+='<rect x="'+c*s+'" y="'+r*s+'" width="'+(s-1)+'" height="'+(s-1)+'" fill="'+color+
+    body+='<rect x="'+(ox+(c-c0)*s)+'" y="'+(oy+(r-r0)*s)+'" width="'+(s-1)+'" height="'+(s-1)+'" fill="'+color+
           '" stroke="rgba(255,255,255,.2)" stroke-width="1" rx="2"/>';
   }
-  host.innerHTML='<svg width="'+(shape[0].length*s)+'" height="'+(shape.length*s)+'">'+body+'</svg>';
+  host.innerHTML='<svg width="'+4*s+'" height="'+2*s+'">'+body+'</svg>';
 }
 function isUnlocked(id){for(var i=0;i<G.unlocked.length;i++)if(G.unlocked[i].id===id)return true;return false;}
 function renderCrew(){
@@ -875,7 +897,12 @@ function nextToUnlock(){
 function renderEnc(){
   var host=el("hud-enc"),who=nextToUnlock();
   var msgs=who&&ENCOURAGEMENT[who.id];
-  if(!who||!msgs){host.innerHTML="";return;}
+  // with everyone found the box stays, invisible, so the sidebar keeps its height
+  if(!who||!msgs){
+    host.innerHTML='<div class="encbox" style="visibility:hidden"><div class="f">'+face("nicole",24)+
+                   '</div><div class="t">&nbsp;</div></div>';
+    return;
+  }
   var msg=msgs[G.encIdx%msgs.length];
   host.innerHTML='<div class="encbox"><div class="f">'+face(who.id,24)+'</div>'+
                  '<div class="t">"'+esc(msg)+'"</div></div>';
@@ -1246,6 +1273,7 @@ function updateDev(){
     'static            : '+(AUDIO.staticDb===-Infinity?'off':AUDIO.staticDb.toFixed(1)+' dBFS')+
       (AUDIO.solo?'   <span class="warn">AUDITION +30 dB</span>':'')+(AC?'':'   (no audio yet)')+'\n'+
     'music/fx          : '+(AUDIO.on?'on':'off')+'   (the static ignores this)\n'+
+    'screen wobble     : '+(DEV.wobbles?'<span class="warn">'+DEV.wobbles+'   last '+esc(DEV.lastWobble)+'</span>':'0')+'\n'+
     'lines '+G.lines+'   level '+(G.level+1)+'   gravity '+gravitySpeed()+'ms\n'+
     '<b>M</b> grant marker   <b>N</b> +10 lines   <b>H</b> hear static   <b>Ctrl+Shift+D</b> hide';
 }
